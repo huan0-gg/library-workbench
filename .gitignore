@@ -1,0 +1,16 @@
+# 系统与编辑器
+.DS_Store
+Thumbs.db
+*.swp
+.idea/
+.vscode/
+
+# Node
+node_modules/
+package-lock.json
+
+# 临时工作目录（本地部署驱动脚本）
+work/
+
+# 日志
+*.log

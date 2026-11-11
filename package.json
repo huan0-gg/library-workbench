@@ -1,0 +1,25 @@
+{
+  "name": "library-workbench",
+  "version": "1.0.0",
+  "description": "资料库在线工作台 —— 零依赖单文件 HTML，绑定 WorkBuddy 资料库数据表，实现数据在线持久化存储与页面↔数据表双向同步",
+  "main": "index.html",
+  "scripts": {
+    "preview": "npx --yes serve ."
+  },
+  "keywords": [
+    "workbuddy",
+    "library",
+    "workbench",
+    "database",
+    "sync",
+    "single-file",
+    "zero-dependency"
+  ],
+  "author": "huan0-gg",
+  "license": "MIT",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/huan0-gg/library-workbench.git"
+  },
+  "private": false
+}
