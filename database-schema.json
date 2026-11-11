@@ -1,0 +1,14 @@
+{
+  "title": "工作台任务清单",
+  "properties": [
+    { "name": "标题", "config": { "text": "" } },
+    { "name": "分类", "config": { "select": { "options": [
+      { "text": "工作" }, { "text": "学习" }, { "text": "生活" }, { "text": "其他" } ] } } },
+    { "name": "优先级", "config": { "select": { "options": [
+      { "text": "P0 紧急" }, { "text": "P1 重要" }, { "text": "P2 一般" } ] } } },
+    { "name": "状态", "config": { "select": { "options": [
+      { "text": "待办" }, { "text": "进行中" }, { "text": "已完成" } ] } } },
+    { "name": "截止日期", "config": { "date": "" } },
+    { "name": "备注", "config": { "text": "" } }
+  ]
+}

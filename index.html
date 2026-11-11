@@ -1,0 +1,682 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>资料库在线工作台</title>
+<!--
+  资料库在线工作台 · Library Workbench
+  ------------------------------------------------------------
+  单文件 HTML 工作台，通过 WorkBuddy 资料库页面数据 SDK
+  (window.__SMART_PAGE__.database) 绑定资料库数据表「工作台任务清单」，
+  实现：在线读写（增 / 改 / 删 / 查 / 统计）+ 双向同步（db.onUpdated 订阅）。
+
+  部署方法见项目 README.md：
+  1. 在资料库创建同构数据表（字段：标题/分类/优先级/状态/截止日期/备注）
+  2. 将下方 DATABASE_ID 替换为你自己的数据表 ID
+  3. 导入该 HTML 并绑定数据表（import_html.py --databases）
+-->
+<style>
+  /* ============ 基础与配色 ============ */
+  * { margin: 0; padding: 0; box-sizing: border-box; }
+  :root {
+    --accent: #2f6fed;
+    --accent-hover: #4a84f5;
+    --bg: #f3f5f8;
+    --card: #ffffff;
+    --border: #dee2e9;
+    --text: #1c2530;
+    --muted: #6e7a8a;
+    --ok: #12805c;
+    --warn: #b45309;
+    --err: #d92d20;
+  }
+  html, body { background: var(--bg); color: var(--text); }
+  body {
+    font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", "Microsoft YaHei", Roboto, sans-serif;
+    font-size: 14px; line-height: 1.6; padding: 16px; max-width: 1080px; margin: 0 auto;
+  }
+  img { max-width: 100%; height: auto; }
+
+  /* ============ 顶栏 ============ */
+  .topbar { display: flex; align-items: center; justify-content: space-between; flex-wrap: wrap; gap: 8px; margin-bottom: 16px; }
+  .topbar h1 { font-size: 20px; font-weight: 700; }
+  .topbar .sub { color: var(--muted); font-size: 12px; margin-top: 2px; }
+  .sync-state { display: inline-flex; align-items: center; gap: 6px; font-size: 12px; color: var(--muted);
+    background: var(--card); border: 1px solid var(--border); border-radius: 999px; padding: 4px 12px; }
+  .sync-state .dot { width: 8px; height: 8px; border-radius: 50%; background: var(--muted); }
+  .sync-state.ok .dot { background: var(--ok); }
+  .sync-state.syncing .dot { background: var(--warn); animation: pulse 1s infinite; }
+  .sync-state.offline .dot { background: var(--err); }
+  @keyframes pulse { 50% { opacity: 0.3; } }
+
+  /* ============ 横幅与错误提示 ============ */
+  .banner { background: #fff7e6; border: 1px solid #f5d98a; color: #7a5b00;
+    border-radius: 10px; padding: 10px 14px; margin-bottom: 16px; font-size: 13px; }
+  .error-bar { background: #fef1f0; border: 1px solid #f4b3ae; color: var(--err);
+    border-radius: 10px; padding: 10px 14px; margin-bottom: 16px; font-size: 13px;
+    display: none; align-items: center; justify-content: space-between; gap: 10px; flex-wrap: wrap; }
+  .error-bar.show { display: flex; }
+  .error-bar button { border: 1px solid var(--err); background: transparent; color: var(--err);
+    border-radius: 6px; padding: 4px 12px; cursor: pointer; font-size: 12px; }
+  .toast { position: fixed; bottom: 24px; left: 50%; transform: translateX(-50%);
+    background: #1c2530; color: #fff; border-radius: 8px; padding: 8px 18px; font-size: 13px;
+    opacity: 0; transition: opacity 0.25s; pointer-events: none; z-index: 99; }
+  .toast.show { opacity: 0.95; }
+
+  /* ============ 通用卡片 ============ */
+  .card { background: var(--card); border: 1px solid var(--border); border-radius: 12px;
+    padding: 16px; margin-bottom: 16px; }
+  .card h2 { font-size: 14px; color: var(--muted); font-weight: 600; margin-bottom: 12px; }
+
+  /* ============ KPI 统计 ============ */
+  .kpis { display: grid; grid-template-columns: repeat(5, 1fr); gap: 12px; margin-bottom: 16px; }
+  .kpi { background: var(--card); border: 1px solid var(--border); border-radius: 12px; padding: 14px 16px; }
+  .kpi .k-label { font-size: 12px; color: var(--muted); }
+  .kpi .k-value { font-size: 26px; font-weight: 700; margin-top: 2px; }
+  .kpi.warn .k-value { color: var(--warn); }
+  .kpi.done .k-value { color: var(--ok); }
+
+  /* ============ 表单 ============ */
+  .form-grid { display: grid; grid-template-columns: 2fr 1fr 1fr 1fr; gap: 10px; }
+  .form-grid .full { grid-column: 1 / -1; }
+  label { display: block; font-size: 12px; color: var(--muted); margin-bottom: 4px; }
+  input[type="text"], input[type="date"], select, textarea {
+    width: 100%; border: 1px solid var(--border); border-radius: 8px; padding: 8px 10px;
+    font-size: 14px; font-family: inherit; background: #fff; color: var(--text); }
+  input:focus, select:focus, textarea:focus { outline: 2px solid rgba(47, 111, 237, 0.25); border-color: var(--accent); }
+  .btn-primary { background: var(--accent); color: #fff; border: none; border-radius: 8px;
+    padding: 10px 22px; font-size: 14px; font-weight: 600; cursor: pointer; }
+  .btn-primary:hover:not(:disabled) { background: var(--accent-hover); }
+  .btn-primary:disabled { opacity: 0.6; cursor: not-allowed; }
+  .btn-ghost { background: transparent; color: var(--muted); border: 1px solid var(--border);
+    border-radius: 8px; padding: 6px 14px; font-size: 13px; cursor: pointer; }
+  .btn-ghost:hover { background: #f6f8fb; color: var(--text); }
+  .form-actions { display: flex; align-items: center; gap: 10px; margin-top: 12px; }
+  .form-hint { font-size: 12px; color: var(--muted); }
+
+  /* ============ 任务列表 ============ */
+  .list-head { display: flex; justify-content: space-between; align-items: center; margin-bottom: 12px; }
+  .list-head h2 { margin-bottom: 0; }
+  .loading, .empty { text-align: center; color: var(--muted); padding: 32px 0; font-size: 13px; }
+  .task-list { list-style: none; }
+  .task-card { border: 1px solid var(--border); border-radius: 10px; padding: 12px 14px; margin-bottom: 10px;
+    display: grid; grid-template-columns: 1fr auto; gap: 6px 14px; align-items: center; }
+  .task-card.done-state { opacity: 0.65; }
+  .t-title { font-weight: 600; font-size: 14px; grid-column: 1 / 2; }
+  .task-card.done-state .t-title { text-decoration: line-through; }
+  .t-note { grid-column: 1 / 2; color: var(--muted); font-size: 12px; }
+  .t-tags { grid-column: 1 / 2; display: flex; flex-wrap: wrap; gap: 6px; font-size: 12px; }
+  .tag { border-radius: 999px; padding: 2px 10px; background: #eef2f8; color: var(--muted); }
+  .tag.cat { background: #e7f0ff; color: #1d4ed8; }
+  .tag.pri-p0 { background: #fef1f0; color: #b42318; }
+  .tag.pri-p1 { background: #fff4e5; color: #b54708; }
+  .tag.st-done { background: #e6f5ef; color: #12805c; }
+  .tag.st-doing { background: #e7f0ff; color: #1d4ed8; }
+  .t-due { color: var(--muted); }
+  .t-due.overdue { color: #b42318; font-weight: 600; }
+  .task-ops { grid-column: 2 / 3; grid-row: 1 / span 3; display: flex; align-items: center; gap: 8px; }
+  .task-ops select { width: auto; padding: 5px 8px; font-size: 13px; }
+  .btn-del { background: transparent; border: 1px solid transparent; color: #b42318; border-radius: 6px;
+    padding: 5px 10px; font-size: 13px; cursor: pointer; }
+  .btn-del:hover { background: #fef1f0; border-color: #f4b3ae; }
+
+  footer { text-align: center; color: var(--muted); font-size: 12px; padding: 8px 0 24px; }
+
+  /* ============ 移动端适配 ============ */
+  @media (max-width: 760px) {
+    .kpis { grid-template-columns: repeat(2, 1fr); }
+    .form-grid { grid-template-columns: 1fr; }
+    .task-card { grid-template-columns: 1fr; }
+    .task-ops { grid-column: 1 / 2; grid-row: auto; justify-content: flex-start; }
+    .t-title, .t-note, .t-tags { grid-column: 1 / 2; }
+  }
+</style>
+</head>
+<body>
+
+  <!-- ============ 顶栏：标题 + 同步状态 ============ -->
+  <div class="topbar">
+    <div>
+      <h1>资料库在线工作台</h1>
+      <div class="sub">数据存储于资料库数据表「工作台任务清单」 · 页面与数据表双向同步</div>
+    </div>
+    <div class="sync-state" id="sync-state"><span class="dot"></span><span id="sync-text">初始化…</span></div>
+  </div>
+
+  <!-- 环境降级横幅：本地直接打开（无资料库 SDK）时显示 -->
+  <div class="banner" id="env-banner" style="display:none">
+    当前环境未接入资料库数据 SDK（window.__SMART_PAGE__.database）。
+    页面已安全降级为静态模式 —— 请将本页面部署到 WorkBuddy 资料库空间后再使用数据功能，部署方法见项目 README。
+  </div>
+
+  <!-- 错误提示条 -->
+  <div class="error-bar" id="error-bar">
+    <span id="error-text"></span>
+    <button type="button" id="retry-btn">重试</button>
+  </div>
+
+  <!-- ============ KPI 统计卡（数据来自 db.aggregate） ============ -->
+  <div class="kpis" id="kpis">
+    <div class="kpi"><div class="k-label">全部任务</div><div class="k-value" id="k-total" data-sp-bindable="database" data-sp-database-id="REPLACE_WITH_YOUR_DATABASE_ID">—</div></div>
+    <div class="kpi"><div class="k-label">待办</div><div class="k-value" id="k-todo" data-sp-bindable="database" data-sp-database-id="REPLACE_WITH_YOUR_DATABASE_ID">—</div></div>
+    <div class="kpi"><div class="k-label">进行中</div><div class="k-value" id="k-doing" data-sp-bindable="database" data-sp-database-id="REPLACE_WITH_YOUR_DATABASE_ID">—</div></div>
+    <div class="kpi done"><div class="k-label">已完成</div><div class="k-value" id="k-done" data-sp-bindable="database" data-sp-database-id="REPLACE_WITH_YOUR_DATABASE_ID">—</div></div>
+    <div class="kpi warn"><div class="k-label">已逾期</div><div class="k-value" id="k-overdue" data-sp-bindable="database" data-sp-database-id="REPLACE_WITH_YOUR_DATABASE_ID">—</div></div>
+  </div>
+
+  <!-- ============ 新建任务表单（db.addRecord） ============ -->
+  <div class="card">
+    <h2>新建任务</h2>
+    <form id="task-form" novalidate>
+      <div class="form-grid">
+        <div>
+          <label for="f-title">标题（必填）</label>
+          <input type="text" id="f-title" name="title" maxlength="100" placeholder="要做什么？">
+        </div>
+        <div>
+          <label for="f-category">分类</label>
+          <select id="f-category" name="category"><option value="">请选择</option></select>
+        </div>
+        <div>
+          <label for="f-priority">优先级</label>
+          <select id="f-priority" name="priority"><option value="">请选择</option></select>
+        </div>
+        <div>
+          <label for="f-due">截止日期</label>
+          <input type="date" id="f-due" name="due">
+        </div>
+        <div class="full">
+          <label for="f-note">备注</label>
+          <input type="text" id="f-note" name="note" maxlength="200" placeholder="补充说明（可选）">
+        </div>
+      </div>
+      <div class="form-actions">
+        <button type="submit" class="btn-primary" id="submit-btn">添加任务</button>
+        <span class="form-hint">提交即写入资料库数据表，多端实时同步</span>
+      </div>
+    </form>
+  </div>
+
+  <!-- ============ 任务列表（db.query 分页全量拉取 + 渲染） ============ -->
+  <div class="card">
+    <div class="list-head">
+      <h2>任务清单</h2>
+      <button type="button" class="btn-ghost" id="refresh-btn">刷新数据</button>
+    </div>
+    <!-- 字段渲染锚点：与 field_mapping 的 display_selector 一一对应；
+         列表行由 JS 动态创建携带同样 class 的元素，此处为静态声明（不展示） -->
+    <div style="display:none" aria-hidden="true">
+      <span class="t-title"></span><span class="t-cat"></span><span class="t-pri"></span>
+      <span class="t-status"></span><span class="t-due"></span><span class="t-note"></span>
+    </div>
+    <div class="loading" id="list-loading">正在从资料库加载数据…</div>
+    <ul class="task-list" id="task-list" style="display:none"></ul>
+    <div class="empty" id="list-empty" style="display:none">暂无任务，先在上方添加一条吧</div>
+  </div>
+
+  <footer>
+    本页面为「资料库在线工作台」开源模板 · 数据持久化于 WorkBuddy 资料库数据表，支持双向同步
+  </footer>
+
+  <div class="toast" id="toast"></div>
+
+<script>
+(function () {
+  'use strict';
+
+  /* ============================================================
+   *  常量与全局状态
+   * ============================================================ */
+
+  // 数据表 ID：来自资料库建表脚本的输出，部署时替换为你自己的表 ID
+  var DATABASE_ID = 'REPLACE_WITH_YOUR_DATABASE_ID';
+
+  var db = null;                    // 页面数据 SDK（无环境时为 null，页面安全降级）
+  var SCHEMA_OPTIONS = {};          // { 字段名: [{ text, id }] }，由 getSchema 动态填充
+  var refreshing = false;           // 刷新进行中标志（防并发，SDK 有 20 QPS 页面限制）
+  var refreshTimer = null;          // 防抖定时器
+  var toastTimer = null;
+
+  // 表单缓存键前缀（提交失败不丢用户输入）
+  var CACHE_PREFIX = 'lwb_form_';
+  var CACHE_FIELDS = ['title', 'category', 'priority', 'due', 'note'];
+
+  /* ============================================================
+   *  小工具：DOM / 提示 / 状态
+   * ============================================================ */
+
+  function $(id) { return document.getElementById(id); }
+
+  function setSyncState(state, text) {
+    var el = $('sync-state');
+    el.className = 'sync-state ' + state;
+    $('sync-text').textContent = text || ({ ok: '已同步', syncing: '同步中…', offline: '离线模式' })[state] || state;
+  }
+
+  function showToast(msg) {
+    var t = $('toast');
+    t.textContent = msg;
+    t.className = 'toast show';
+    if (toastTimer) clearTimeout(toastTimer);
+    toastTimer = setTimeout(function () { t.className = 'toast'; }, 2200);
+  }
+
+  function showError(msg) {
+    $('error-text').textContent = msg;
+    $('error-bar').className = 'error-bar show';
+  }
+
+  function hideError() { $('error-bar').className = 'error-bar'; }
+
+  // 统一的错误信息提取（SDK 错误可能是 Error / 对象 / 字符串）
+  function errMsg(err) {
+    if (!err) return '未知错误';
+    if (err.message) return err.message;
+    if (typeof err === 'string') return err;
+    try { return JSON.stringify(err); } catch (e) { return String(err); }
+  }
+
+  // 生成 DOM 元素的快捷函数（全部用 textContent，杜绝 innerHTML 注入风险）
+  function el(tag, className, text) {
+    var node = document.createElement(tag);
+    if (className) node.className = className;
+    if (text !== undefined && text !== null && text !== '') node.textContent = text;
+    return node;
+  }
+
+  // 数据绑定标记：凡是文本直接来自数据表的元素都打上（canonical-schema §1.5.5）
+  function bindToDb(node) {
+    node.setAttribute('data-sp-bindable', 'database');
+    node.setAttribute('data-sp-database-id', DATABASE_ID);
+    return node;
+  }
+
+  // 今天日期（本地时区）的 YYYY-MM-DD
+  function todayStr() {
+    var d = new Date();
+    var m = d.getMonth() + 1, day = d.getDate();
+    return d.getFullYear() + '-' + (m < 10 ? '0' + m : m) + '-' + (day < 10 ? '0' + day : day);
+  }
+
+  // ISO 日期串 → YYYY-MM-DD（仅供显示）
+  function fmtDate(iso) {
+    if (!iso) return '';
+    return String(iso).substring(0, 10);
+  }
+
+  /* ============================================================
+   *  数据层：统计聚合（db.aggregate）
+   * ============================================================ */
+
+  function loadStats() {
+    var kTodo = $('k-todo'), kDoing = $('k-doing'), kDone = $('k-done'),
+        kTotal = $('k-total'), kOverdue = $('k-overdue');
+    [kTodo, kDoing, kDone, kTotal, kOverdue].forEach(function (n) { if (n) n.textContent = '—'; });
+    return db.aggregate({
+      databaseId: DATABASE_ID,
+      aggregates: [
+        { name: 'total', type: 'count' },
+        { name: 'by_status', type: 'count', groupBy: '状态' },
+        { name: 'overdue', type: 'count', filter: {
+          and: [
+            { property: { property: '截止日期', date: { before: todayStr() } } },
+            { property: { property: '状态', select: { does_not_equal: '已完成' } } }
+          ]
+        } }
+      ]
+    }).then(function (rsp) {
+      var statusMap = {};
+      var results = (rsp && rsp.results) || [];
+      results.forEach(function (item) {
+        if (item.name === 'by_status') {
+          // groupBy 结果：[{ key: 选项文本, count: n }]
+          (item.value || []).forEach(function (g) { statusMap[g.key] = g.count; });
+        } else if (item.name === 'total') {
+          bindToDb(kTotal); kTotal.textContent = String(item.value == null ? 0 : item.value);
+        } else if (item.name === 'overdue') {
+          bindToDb(kOverdue); kOverdue.textContent = String(item.value == null ? 0 : item.value);
+        }
+      });
+      bindToDb(kTodo); kTodo.textContent = String(statusMap['待办'] || 0);
+      bindToDb(kDoing); kDoing.textContent = String(statusMap['进行中'] || 0);
+      bindToDb(kDone); kDone.textContent = String(statusMap['已完成'] || 0);
+    }).catch(function (err) {
+      console.error('[database] 统计加载失败:', err);
+      throw err;   // 透传给统一刷新入口，由其展示用户可见错误
+    });
+  }
+
+  /* ============================================================
+   *  数据层：全量分页拉取（loadAll 模式，含三重防死循环保障）
+   * ============================================================ */
+
+  function loadAll(startCursor, acc, guard) {
+    acc = acc || [];
+    guard = guard || 0;
+    if (guard > 100) return Promise.resolve(acc);  // 保障①：硬上限断路
+    return db.query({
+      databaseId: DATABASE_ID,
+      pageSize: 200,          // 单次仅返回一页（上限 200），必须自行分页
+      startCursor: startCursor
+    }).then(function (r) {
+      acc = acc.concat(r.results || []);   // 只从 result.results 取数
+      var next = r.nextCursor;
+      // 保障②：cursor 必须推进；保障③：本页非空才继续翻页
+      if (r.hasMore && next && next !== startCursor && (r.results || []).length) {
+        return loadAll(next, acc, guard + 1);
+      }
+      return acc;
+    }).catch(function (err) {
+      console.error('[database] 数据加载失败:', err);
+      throw err;   // 透传给统一刷新入口，由其展示用户可见错误
+    });
+  }
+
+  function loadTasks() {
+    return loadAll().then(renderTasks);
+  }
+
+  /* ============================================================
+   *  渲染层：任务列表（row 键 = schema 字段名；全部 textContent）
+   * ============================================================ */
+
+  function renderTasks(rows) {
+    var list = $('task-list');
+    var loading = $('list-loading');
+    var empty = $('list-empty');
+    list.innerHTML = '';   // 清空为常量字符串，无注入面
+
+    loading.style.display = 'none';
+    empty.style.display = 'none';
+
+    if (!rows || !rows.length) { empty.style.display = 'block'; return; }
+
+    var frag = document.createDocumentFragment();
+    rows.forEach(function (row) { frag.appendChild(buildTaskRow(row)); });
+    list.appendChild(frag);
+    list.style.display = 'block';
+  }
+
+  function buildTaskRow(row) {
+    var card = el('li', 'task-card');
+    var statusText = row['状态'] || '';
+
+    if (statusText === '已完成') card.className += ' done-state';
+
+    // 标题
+    card.appendChild(bindToDb(el('div', 't-title', row['标题'] || '(无标题)')));
+
+    // 备注（可选）
+    if (row['备注']) card.appendChild(bindToDb(el('div', 't-note', row['备注'])));
+
+    // 标签组：分类 / 优先级 / 状态 / 截止日期（class 与 field_mapping 的 display_selector 对齐）
+    var tags = el('div', 't-tags');
+    if (row['分类']) tags.appendChild(bindToDb(el('span', 'tag cat t-cat', row['分类'])));
+    if (row['优先级']) {
+      var priCls = 'tag pri-' + (String(row['优先级']).charAt(0).toLowerCase() || 'p') + ' t-pri';
+      tags.appendChild(bindToDb(el('span', priCls, row['优先级'])));
+    }
+    var stCls = 'tag t-status' + (statusText === '已完成' ? ' st-done' : statusText === '进行中' ? ' st-doing' : '');
+    tags.appendChild(bindToDb(el('span', stCls, statusText || '未设置')));
+    if (row['截止日期']) {
+      var overdue = fmtDate(row['截止日期']) < todayStr() && statusText !== '已完成';
+      tags.appendChild(bindToDb(el('span', 'tag t-due' + (overdue ? ' overdue' : ''), '截止 ' + fmtDate(row['截止日期']))));
+    }
+    card.appendChild(tags);
+
+    // 操作区：状态下拉（updateRecord）+ 删除（deleteRecord）
+    var ops = el('div', 'task-ops');
+    ops.appendChild(buildStatusSelect(row, statusText));
+    ops.appendChild(buildDeleteBtn(row));
+    card.appendChild(ops);
+
+    return card;
+  }
+
+  function buildStatusSelect(row, statusText) {
+    var sel = document.createElement('select');
+    var opts = SCHEMA_OPTIONS['状态'];
+    if (opts && opts.length) {
+      opts.forEach(function (opt) {
+        var o = el('option', null, opt.text);
+        o.value = opt.id;                 // value = 选项 id（权威 schema）
+        if (opt.text === statusText) o.selected = true;
+        sel.appendChild(o);
+      });
+    } else {
+      // schema 未加载成功的兜底：用文本值
+      ['待办', '进行中', '已完成'].forEach(function (t) {
+        var o = el('option', null, t);
+        o.value = t;
+        if (t === statusText) o.selected = true;
+        sel.appendChild(o);
+      });
+    }
+    sel.title = '修改状态';
+    sel.addEventListener('change', function () {
+      var newVal = sel.value;                    // 选项 id（兜底时为文本）
+      sel.disabled = true;
+      db.updateRecord({ databaseId: DATABASE_ID, recordId: row._id, properties: { '状态': { select: newVal } } })
+        .then(function () { showToast('状态已更新'); })
+        .catch(function (err) { showError('状态更新失败：' + errMsg(err)); })
+        .finally(function () {
+          sel.disabled = false;
+          scheduleRefresh();   // 成功与失败都重拉数据，保证界面与数据表一致
+        });
+    });
+    return sel;
+  }
+
+  function buildDeleteBtn(row) {
+    var btn = el('button', 'btn-del', '删除');
+    btn.type = 'button';
+    btn.addEventListener('click', function () {
+      if (!window.confirm('确定删除「' + (row['标题'] || '该任务') + '」吗？删除后不可恢复。')) return;
+      btn.disabled = true;
+      db.deleteRecord({ databaseId: DATABASE_ID, recordId: row._id })
+        .then(function () { showToast('已删除'); scheduleRefresh(); })
+        .catch(function (err) {
+          btn.disabled = false;
+          showError('删除失败：' + errMsg(err));
+        });
+    });
+    return btn;
+  }
+
+  /* ============================================================
+   *  表单层：新建任务（db.addRecord）+ 输入缓存
+   * ============================================================ */
+
+  function optionId(fieldName, text) {
+    var opts = SCHEMA_OPTIONS[fieldName];
+    if (opts) {
+      for (var i = 0; i < opts.length; i++) {
+        if (opts[i].text === text) return opts[i].id;
+      }
+    }
+    return text;  // 找不到 id 时回退为文本（服务端同样接受选项文本）
+  }
+
+  function submitTask(e) {
+    e.preventDefault();
+    hideError();
+
+    var form = $('task-form');
+    var title = form.querySelector('[name="title"]').value.trim();
+    if (!title) { showError('请填写任务标题'); return; }
+
+    var btn = $('submit-btn');
+    btn.disabled = true;
+    btn.textContent = '提交中…';
+
+    var properties = {};
+    properties['标题'] = { text: title };
+
+    var cat = form.querySelector('[name="category"]').value;
+    if (cat) properties['分类'] = { select: cat };
+    var pri = form.querySelector('[name="priority"]').value;
+    if (pri) properties['优先级'] = { select: pri };
+    var due = form.querySelector('[name="due"]').value;
+    if (due) properties['截止日期'] = { date: due };
+    var note = form.querySelector('[name="note"]').value.trim();
+    if (note) properties['备注'] = { text: note };
+
+    // 新任务默认状态：待办
+    properties['状态'] = { select: optionId('状态', '待办') };
+
+    db.addRecord({ databaseId: DATABASE_ID, properties: properties })
+      .then(function () {
+        showToast('已添加到资料库');
+        form.reset();
+        clearFormCache();
+        scheduleRefresh();          // 立即拉取最新数据（onUpdated 通知也会并入同一次防抖）
+      })
+      .catch(function (err) {
+        showError('添加失败：' + errMsg(err) + '（输入已保留，可直接重试）');
+      })
+      .finally(function () {
+        btn.disabled = false;
+        btn.textContent = '添加任务';
+      });
+  }
+
+  /* ---- 表单输入本地缓存：失败重试不丢输入 ---- */
+
+  function cacheForm() {
+    if (!window.localStorage) return;
+    try {
+      var form = $('task-form');
+      CACHE_FIELDS.forEach(function (name) {
+        var input = form.querySelector('[name="' + name + '"]');
+        if (input) window.localStorage.setItem(CACHE_PREFIX + name, input.value);
+      });
+    } catch (e) { /* 存储不可用时静默降级 */ }
+  }
+
+  function restoreFormCache() {
+    if (!window.localStorage) return;
+    try {
+      var form = $('task-form');
+      CACHE_FIELDS.forEach(function (name) {
+        var input = form.querySelector('[name="' + name + '"]');
+        var v = window.localStorage.getItem(CACHE_PREFIX + name);
+        if (input && v) input.value = v;
+      });
+    } catch (e) { /* 静默降级 */ }
+  }
+
+  function clearFormCache() {
+    if (!window.localStorage) return;
+    try {
+      CACHE_FIELDS.forEach(function (name) {
+        window.localStorage.removeItem(CACHE_PREFIX + name);
+      });
+    } catch (e) { /* 静默降级 */ }
+  }
+
+  /* ============================================================
+   *  同步层：统一刷新入口 + db.onUpdated 双向同步订阅
+   * ============================================================ */
+
+  function scheduleRefresh() {
+    if (refreshTimer) clearTimeout(refreshTimer);
+    refreshTimer = setTimeout(doRefresh, 300);   // 300ms 防抖，合并连发通知
+  }
+
+  function doRefresh() {
+    if (!db) return;
+    if (refreshing) { scheduleRefresh(); return; }   // 防并发（页面 20 QPS 限制）
+    refreshing = true;
+    hideError();
+    setSyncState('syncing');
+    loadStats()                      // 串行执行，避免 SDK 调用突发
+      .then(function () { return loadTasks(); })
+      .then(function () { setSyncState('ok'); })
+      .catch(function (err) {
+        setSyncState('offline');
+        showError('数据加载失败：' + errMsg(err));
+      })
+      .finally(function () { refreshing = false; });
+  }
+
+  /* ============================================================
+   *  初始化：schema → 动态选项 → 缓存恢复 → 首次加载 → 订阅变更
+   * ============================================================ */
+
+  function renderSelectOptions() {
+    var form = $('task-form');
+    [['category', '分类'], ['priority', '优先级']].forEach(function (pair) {
+      var sel = form.querySelector('[name="' + pair[0] + '"]');
+      if (!sel) return;
+      while (sel.options.length > 1) sel.remove(1);   // 保留首个占位项
+      var opts = SCHEMA_OPTIONS[pair[1]] || [];
+      opts.forEach(function (opt) {
+        var o = el('option', null, opt.text);
+        o.value = opt.id;
+        sel.appendChild(o);
+      });
+    });
+  }
+
+  function init() {
+    var sdk = window.__SMART_PAGE__;
+    db = sdk && sdk.database ? sdk.database : null;
+
+    if (!db) {
+      // 本地 / 无 SDK 环境：安全降级为静态展示
+      $('env-banner').style.display = 'block';
+      setSyncState('offline', '离线模式');
+      $('list-loading').style.display = 'none';
+      $('list-empty').style.display = 'block';
+      return;
+    }
+
+    setSyncState('syncing');
+
+    // 表单：提交 + 输入缓存（300ms 防抖）
+    $('task-form').addEventListener('submit', submitTask);
+    var cacheTimer = null;
+    function onFormInput() {
+      if (cacheTimer) clearTimeout(cacheTimer);
+      cacheTimer = setTimeout(cacheForm, 300);
+    }
+    $('task-form').addEventListener('input', onFormInput);
+    $('task-form').addEventListener('change', onFormInput);
+
+    $('refresh-btn').addEventListener('click', doRefresh);
+    $('retry-btn').addEventListener('click', doRefresh);
+
+    // 双向同步：订阅数据表变更（他人改表 / 其他端提交 / 脚本写入 / 本页写入均会通知）
+    if (typeof db.onUpdated === 'function') {
+      db.onUpdated(function (payload) {
+        var ids = (payload && payload.databaseIds) || [];
+        if (ids.length && ids.indexOf(DATABASE_ID) === -1) return;   // 只处理本页绑定的表
+        showToast('数据有更新，正在同步…');
+        scheduleRefresh();
+      });
+    }
+
+    // 读取表结构 → 动态渲染下拉选项 → 恢复表单缓存 → 首次加载
+    db.getSchema({ databaseId: DATABASE_ID })
+      .then(function (schema) {
+        (schema.properties || []).forEach(function (field) {
+          if ((field.type === 'select' || field.type === 'multi_select') &&
+              field.config && field.config.options) {
+            SCHEMA_OPTIONS[field.name] = field.config.options;
+          }
+        });
+        renderSelectOptions();
+        restoreFormCache();
+      })
+      .catch(function (err) {
+        showError('数据表结构加载失败：' + errMsg(err));
+      })
+      .finally(function () { doRefresh(); });
+  }
+
+  init();
+})();
+</script>
+</body>
+</html>
